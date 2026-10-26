@@ -1,0 +1,133 @@
+name: Build Sonsei firmware
+
+# Builds the Sonsei Neuron firmware with the patches in patches/ applied, and
+# packages a folder Bazecor can flash via Firmware Update -> "Install a custom
+# firmware": Wireless_neuron.bin (this build) + keyscanner.bin (official 1.1.0).
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+env:
+  GCC_ARM_VERSION: 10.3-2021.10
+  GCC_ARM_URL: https://developer.arm.com/-/media/Files/downloads/gnu-rm/10.3-2021.10/gcc-arm-none-eabi-10.3-2021.10-x86_64-linux.tar.bz2
+  GCC_ARM_SHA256: 97dbb4f019ad1650b732faffcc881689cedc14e2b7ee863d390e0a41ef16c9a3
+  NRF5_SDK: nRF5_SDK_17.1.0_ddde560
+  NRF5_SDK_URL: https://nsscprodmedia.blob.core.windows.net/prod/software-and-other-downloads/sdks/nrf5/binaries/nrf5_sdk_17.1.0_ddde560.zip
+  NRF5_SDK_SHA256: 5bfe38e744c39fd7f30e10077ba12df306ef91f368894795d6a3e7a62dc68061
+
+  # Reported to Bazecor by the `version` command. The "+holdonpress" build
+  # metadata marks the fork without making Bazecor treat it as older than 1.1.0.
+  SONSEI_FW_VERSION: v1.1.0+holdonpress
+  # Stored in the bootloader seal; same as the official 1.1.0 image.
+  SONSEI_NEURON_FW_VERSION: v1.1.0
+
+  # Official Sonsei 1.1.0 release files, pinned by commit and checksum.
+  FW_RELEASE_BASE: https://raw.githubusercontent.com/Dygmalab/Firmware-release/d4b02a69fab0bce279adfca0460f1525b76f0abd/Sonsei/1.1.0
+  KEYSCANNER_SHA256: e14d478209cca1f4dc7c163c94ed722796746d549364d67916053609af7c2c01
+  OFFICIAL_NEURON_SHA256: b267fe4539b7b6f690d5c804fbd500644fa36b0636537816dea467d1468bc098
+
+  PACKAGE_NAME: Sonsei-v1.1.0-holdonpress
+
+jobs:
+  build:
+    name: Build (release)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # .gitmodules uses SSH URLs; rewrite them to HTTPS so no deploy key is needed.
+      - name: Checkout submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive --jobs 8
+
+      - name: Apply patches
+        run: |
+          for p in patches/kaleidoscope_adapter/*.patch; do
+            echo "Applying $p"
+            git apply --verbose --directory=libraries/kaleidoscope_adapter "$p"
+          done
+
+      - name: Test tap-or-hold logic (host)
+        run: tools/qukeys-sim/run.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install intelhex numpy
+
+      - name: Cache toolchain and SDK
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: ~/deps
+          key: deps-gcc-arm-${{ env.GCC_ARM_VERSION }}-${{ env.NRF5_SDK }}
+
+      - name: Download toolchain and SDK
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/deps && cd ~/deps
+          curl -fsSL --retry 3 -o gcc-arm.tar.bz2 "$GCC_ARM_URL"
+          echo "$GCC_ARM_SHA256  gcc-arm.tar.bz2" | sha256sum -c -
+          tar xjf gcc-arm.tar.bz2 && rm gcc-arm.tar.bz2
+          curl -fsSL --retry 3 -o sdk.zip "$NRF5_SDK_URL"
+          echo "$NRF5_SDK_SHA256  sdk.zip" | sha256sum -c -
+          unzip -q sdk.zip -d sdk && rm sdk.zip
+
+      - name: Set up toolchain and SDK
+        run: |
+          echo "$HOME/deps/gcc-arm-none-eabi-$GCC_ARM_VERSION/bin" >> "$GITHUB_PATH"
+          mkdir -p libraries/SDK
+          ln -sfn "$HOME/deps/sdk/$NRF5_SDK" "libraries/SDK/$NRF5_SDK"
+
+      - name: Build
+        working-directory: build
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          make release -j"$(nproc)" \
+            SONSEI_FW_VERSION="$SONSEI_FW_VERSION" \
+            SONSEI_NEURON_FW_VERSION="$SONSEI_NEURON_FW_VERSION"
+
+      - name: Check the patch made it into the binary
+        run: |
+          grep -a -q "qukeys.holdOnOtherKeyPress" build/release/NeuronWireless_sonsei.bin
+          grep -a -q "$SONSEI_FW_VERSION" build/release/NeuronWireless_sonsei.bin
+          echo "OK: patched Focus command and fork version string present"
+
+      - name: Package flashable folder
+        run: |
+          mkdir -p "dist/$PACKAGE_NAME" official
+          cp build/release/NeuronWireless_sonsei_sealed.bin "dist/$PACKAGE_NAME/Wireless_neuron.bin"
+          curl -fsSL --retry 3 -o "dist/$PACKAGE_NAME/keyscanner.bin" "$FW_RELEASE_BASE/keyscanner.bin"
+          echo "$KEYSCANNER_SHA256  dist/$PACKAGE_NAME/keyscanner.bin" | sha256sum -c -
+          curl -fsSL --retry 3 -o official/Wireless_neuron.bin "$FW_RELEASE_BASE/Wireless_neuron.bin"
+          echo "$OFFICIAL_NEURON_SHA256  official/Wireless_neuron.bin" | sha256sum -c -
+          python tools/check_seal.py "dist/$PACKAGE_NAME/Wireless_neuron.bin" --reference official/Wireless_neuron.bin
+          cp FORK.md "dist/$PACKAGE_NAME/README.md"
+          (cd dist && sha256sum "$PACKAGE_NAME"/*.bin > "$PACKAGE_NAME/SHA256SUMS")
+          ls -la "dist/$PACKAGE_NAME"
+
+      - name: Upload flashable folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-outputs-${{ github.sha }}
+          path: |
+            build/release/NeuronWireless_sonsei_sealed.bin
+            build/release/NeuronWireless_sonsei_sealed.hex
+            build/release/NeuronWireless_sonsei.elf
+            build/release/NeuronWireless_sonsei.map
+          if-no-files-found: error

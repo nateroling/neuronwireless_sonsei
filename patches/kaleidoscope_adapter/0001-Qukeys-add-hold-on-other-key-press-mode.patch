@@ -1,0 +1,158 @@
+From 4a285dc881103362218ad7aed90a27d9dd86638e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 26 Oct 2026 13:36:06 -0500
+Subject: [PATCH] Qukeys: add hold-on-other-key-press mode
+
+When enabled, a qukey whose primary value is not a modifier (e.g. a fast
+Superkey with TAP = key and HOLD = modifier/layer) resolves to its
+alternate (hold) value as soon as another key is pressed while it is
+held, instead of waiting for that key's release (permissive hold) or for
+the hold timeout. Equivalent to QMK's HOLD_ON_OTHER_KEY_PRESS and ZMK's
+"hold-preferred" flavor.
+
+The existing guards still apply: a qukey pressed within the minimum prior
+interval of a printable key stays a tap, and a qukey released before the
+minimum hold time falls back to the normal rules.
+
+The default comes from QUKEYS_HOLD_ON_OTHER_KEY_PRESS (1 = on). The
+qukeys.holdOnOtherKeyPress Focus command reads or sets it at runtime,
+without persisting it.
+
+Also return after flushing a qukey for the minimum-prior-interval rule,
+so the rest of processQueue() doesn't evaluate the remaining queued events
+against the qukey that was just flushed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EKekzNTberVKiTyKR9ftjb
+---
+ plugins/QukeysDygma.cpp | 46 ++++++++++++++++++++++++++++++++++++++++-
+ plugins/QukeysDygma.h   | 14 +++++++++++++
+ 2 files changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/QukeysDygma.cpp b/plugins/QukeysDygma.cpp
+index 33944a6..0491d80 100644
+--- a/plugins/QukeysDygma.cpp
++++ b/plugins/QukeysDygma.cpp
+@@ -214,6 +214,9 @@ bool Qukeys::processQueue() {
+                               p_Qukeys_config->minimum_prior_interval) &&
+       !qukey_is_spacecadet) {
+     flushEvent(queue_head_.primary_key);
++    // The queue head (and `queue_head_`) changed; stop here so the loop below
++    // doesn't evaluate the remaining events against the qukey we just flushed.
++    return true;
+   }
+ 
+   // Now we search the queue for events that will let us decide if the qukey
+@@ -229,6 +232,15 @@ bool Qukeys::processQueue() {
+         flushEvent(queue_head_.primary_key);
+         return true;
+       }
++      // Hold-on-other-key-press: another key went down while the qukey is
++      // held, so the qukey takes its alternate (hold) value right away --
++      // provided it is (or was) held for at least the minimum hold time. If
++      // that hasn't elapsed yet, keep waiting; this is re-evaluated each cycle.
++      // If the qukey is released before then, the normal rules below decide.
++      if (hold_on_other_key_press_ && qukeyHeldThroughMinimumHoldTime()) {
++        flushEvent(queue_head_.alternate_key);
++        return true;
++      }
+       // Otherwise, we've found a subsequent key press, so we record it for the
+       // overlap comparison later, unless we've already done so.
+       if (next_keypress_index == 0) {
+@@ -506,6 +518,22 @@ bool Qukeys::isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const {
+   return false;
+ }
+ 
++// Returns true if the qukey at the head of the queue has been held for at
++// least `minimum_hold_time`: either its release is queued and came at least
++// that long after its press, or it is still held and that much time has passed.
++bool Qukeys::qukeyHeldThroughMinimumHoldTime() const {
++  KeyAddr qukey_addr = event_queue_.addr(0);
++  uint16_t press_time = event_queue_.timestamp(0);
++  for (uint8_t i{1}; i < event_queue_.length(); ++i) {
++    if (event_queue_.isRelease(i) && event_queue_.addr(i) == qukey_addr) {
++      uint16_t held_for = event_queue_.timestamp(i) - press_time;
++      // Same comparison as Runtime.hasTimeExpired(), so both branches agree.
++      return held_for > p_Qukeys_config->minimum_hold_time;
++    }
++  }
++  return Runtime.hasTimeExpired(press_time, p_Qukeys_config->minimum_hold_time);
++}
++
+ 
+ // -----------------------------------------------------------------------------
+ 
+@@ -531,7 +559,7 @@ bool isModifierKey(Key key) {
+ 
+ EventHandlerResult Qukeys::onFocusEvent(const char *command)
+ {
+-  if (::Focus.handleHelp(command, PSTR("qukeys.holdTimeout\nqukeys.overlapThreshold\nqukeys.minimumHoldTime\nqukeys.minimumPriorInterval")))
++  if (::Focus.handleHelp(command, PSTR("qukeys.holdTimeout\nqukeys.overlapThreshold\nqukeys.minimumHoldTime\nqukeys.minimumPriorInterval\nqukeys.holdOnOtherKeyPress")))
+     return EventHandlerResult::OK;
+ 
+   if (strncmp_P(command, PSTR("qukeys."), 7) != 0)
+@@ -604,6 +632,22 @@ EventHandlerResult Qukeys::onFocusEvent(const char *command)
+     }
+   }
+ 
++  // Not persisted (v0): a write lasts until the keyboard restarts.
++  if (strcmp_P(command + 7, PSTR("holdOnOtherKeyPress")) == 0)
++  {
++    if (::Focus.isEOL())
++    {
++      ::Focus.send(uint8_t(hold_on_other_key_press_ ? 1 : 0));
++    }
++    else
++    {
++      uint8_t enabled;
++      ::Focus.read(enabled);
++
++      hold_on_other_key_press_ = (enabled != 0);
++    }
++  }
++
+   return EventHandlerResult::EVENT_CONSUMED;
+ }
+ 
+diff --git a/plugins/QukeysDygma.h b/plugins/QukeysDygma.h
+index 5b02b5a..cebcf71 100644
+--- a/plugins/QukeysDygma.h
++++ b/plugins/QukeysDygma.h
+@@ -25,6 +25,12 @@
+ #include <Kaleidoscope-Ranges.h>
+ #include "kaleidoscope/plugin/Qukeys/KeyAddrEventQueue.h"
+ 
++// Default for the hold-on-other-key-press behavior (1 = on). Override with
++// -DQUKEYS_HOLD_ON_OTHER_KEY_PRESS=0 to build with stock Qukeys behavior.
++#ifndef QUKEYS_HOLD_ON_OTHER_KEY_PRESS
++#define QUKEYS_HOLD_ON_OTHER_KEY_PRESS 1
++#endif
++
+ // DualUse Key definitions for Qukeys in the keymap
+ #define MT(mod, key) Key(                                               \
+     kaleidoscope::ranges::DUM_FIRST +                                   \
+@@ -217,6 +223,13 @@ class Qukeys : public kaleidoscope::Plugin {
+   // This determines whether the plugin is on or off.
+   bool active_{true};
+ 
++  // Hold-on-other-key-press (QMK HOLD_ON_OTHER_KEY_PRESS / ZMK "hold-preferred"):
++  // when true, a qukey whose primary value is not a modifier resolves to its
++  // alternate (hold) value as soon as another key is pressed while it is held,
++  // instead of waiting for that key's release or for the hold timeout. Not
++  // persisted: resets to QUKEYS_HOLD_ON_OTHER_KEY_PRESS on boot.
++  bool hold_on_other_key_press_{QUKEYS_HOLD_ON_OTHER_KEY_PRESS};
++
+   const Qukeys_config_t * p_Qukeys_config;
+ 
+ //  // This variable stores the percentage number between 0 and 99 that determines
+@@ -262,6 +275,7 @@ class Qukeys : public kaleidoscope::Plugin {
+   bool isDualUseKey(Key key);
+   bool releaseDelayed(uint16_t overlap_start, uint16_t overlap_end) const;
+   bool isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const;
++  bool qukeyHeldThroughMinimumHoldTime() const;
+ 
+   void mem_hold_timeout_save( uint16_t hold_timeout );
+   void mem_overlap_threshold_save( uint8_t overlap_threshold );
+-- 
+2.43.0
+
