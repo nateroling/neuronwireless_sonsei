@@ -3,10 +3,12 @@ name: Build Sonsei firmware
 # Builds the Sonsei Neuron firmware with the patches in patches/ applied, and
 # packages a folder Bazecor can flash via Firmware Update -> "Install a custom
 # firmware": Wireless_neuron.bin (this build) + keyscanner.bin (official 1.1.0).
+# The folder is uploaded as an artifact and also published to the
+# builds/<branch> branch, so it can be fetched with git or downloaded as a ZIP.
 
 on:
   push:
-    branches: ["**"]
+    branches: ["**", "!builds/**"]
   workflow_dispatch:
 
 env:
@@ -34,6 +36,8 @@ jobs:
   build:
     name: Build (release)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # to publish the builds/<branch> branch
 
     steps:
       - name: Checkout
@@ -131,3 +135,22 @@ jobs:
             build/release/NeuronWireless_sonsei.elf
             build/release/NeuronWireless_sonsei.map
           if-no-files-found: error
+
+      # One commit per build, force-pushed: the branch always holds the latest
+      # flashable folder for the source branch, plus where it came from.
+      - name: Publish flashable folder to builds/<branch>
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          target="builds/${GITHUB_REF_NAME}"
+          cd dist
+          printf 'Built from %s@%s by run %s/%s/actions/runs/%s\n' \
+            "$GITHUB_REF_NAME" "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > BUILD_INFO.txt
+          git init -q
+          git checkout -q -b "$target"
+          git add .
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Build of ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$target"
+          echo "Published to $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$target"

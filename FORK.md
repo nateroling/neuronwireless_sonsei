@@ -35,9 +35,11 @@ modifier, are not affected.
 
 ## Flashing
 
-1. Download the `Sonsei-v1.1.0-holdonpress-…` artifact from the latest
-   successful run in this repo's Actions tab and unzip it. You need the
-   folder that contains `Wireless_neuron.bin` and `keyscanner.bin`.
+1. Get the latest build. Either open the `builds/hold-on-other-key-press`
+   branch and choose **Code → Download ZIP**, or download the
+   `Sonsei-v1.1.0-holdonpress-…` artifact from the latest successful run in
+   the Actions tab. Unzip it. You need the folder that contains
+   `Wireless_neuron.bin` and `keyscanner.bin`.
 2. In Bazecor: **Firmware Update → Install a custom firmware → select folder**,
    choose that folder, **Add custom firmware**, then **Update now**.
 3. Bazecor should report the firmware version as `v1.1.0+holdonpress`.
@@ -68,3 +70,4 @@ restarts. The setting is not saved to memory yet.
 - `tools/check_seal.py` runs the same image checks Bazecor runs before it
   flashes, plus a comparison with the official image.
 - `.github/workflows/build.yml` builds, tests, checks and packages the firmware.
+  The flashable folder is also published to the `builds/<branch>` branch.
