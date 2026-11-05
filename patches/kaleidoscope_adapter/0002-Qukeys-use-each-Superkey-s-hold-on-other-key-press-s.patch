@@ -1,0 +1,104 @@
+From b35334c7eaf33a53b689de5205fc538631163ac4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 14:53:59 +0000
+Subject: [PATCH] Qukeys: use each Superkey's hold-on-other-key-press setting
+
+A qukey made from a Superkey now takes its hold action on another key's
+press only if that Superkey has hold-on-other-key-press on (see
+KeyRoleManager::superkey_hold_on_other_key_press()). Qukeys that aren't
+from a Superkey keep it on. The global qukeys.holdOnOtherKeyPress stays
+as a master switch.
+
+Adds KBDMEM_ITEM_TYPE_KEYROLE_EXT for the per-Superkey settings.
+
+Depends on the kaleidoscope submodule patch that adds them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013er8HvVx2UQptRCtTJmM6t
+---
+ fal/public/kbdfal_memory.h | 1 +
+ plugins/QukeysDygma.cpp    | 9 ++++++++-
+ plugins/QukeysDygma.h      | 7 ++++++-
+ 3 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/fal/public/kbdfal_memory.h b/fal/public/kbdfal_memory.h
+index e79ba56..b8540fb 100644
+--- a/fal/public/kbdfal_memory.h
++++ b/fal/public/kbdfal_memory.h
+@@ -34,6 +34,7 @@ extern "C" {
+         KBDMEM_ITEM_TYPE_QUKEYS,
+         KBDMEM_ITEM_TYPE_SUPERKEY,
+         KBDMEM_ITEM_TYPE_MACROS,
++        KBDMEM_ITEM_TYPE_KEYROLE_EXT,  /* Fork: per-Superkey options, stored after all stock items */
+     } kbdmem_item_type_t;
+ 
+ #ifdef __cplusplus
+diff --git a/plugins/QukeysDygma.cpp b/plugins/QukeysDygma.cpp
+index 0491d80..4408034 100644
+--- a/plugins/QukeysDygma.cpp
++++ b/plugins/QukeysDygma.cpp
+@@ -237,7 +237,8 @@ bool Qukeys::processQueue() {
+       // provided it is (or was) held for at least the minimum hold time. If
+       // that hasn't elapsed yet, keep waiting; this is re-evaluated each cycle.
+       // If the qukey is released before then, the normal rules below decide.
+-      if (hold_on_other_key_press_ && qukeyHeldThroughMinimumHoldTime()) {
++      if (hold_on_other_key_press_ && queue_head_.hold_on_other_key_press &&
++          qukeyHeldThroughMinimumHoldTime()) {
+         flushEvent(queue_head_.alternate_key);
+         return true;
+       }
+@@ -358,6 +359,10 @@ bool Qukeys::isQukey(KeyAddr k) {
+   // keyswitch toggled on.
+   Key key = Layer.lookupOnActiveLayer(k);
+ 
++  // Qukeys that don't come from a Superkey keep hold-on-other-key-press on.
++  // isDualUseKey() overrides this for the ones that do.
++  queue_head_.hold_on_other_key_press = true;
++
+   // Next, we check to see if this is a DualUse-type qukey (defined in the keymap)
+   if (isDualUseKey(key)) {
+     return true;
+@@ -437,6 +442,7 @@ bool Qukeys::isDualUseKey(Key key) {
+     {
+       queue_head_.primary_key.setFlags(action_flags->flags_action_1);
+       queue_head_.alternate_key.setFlags(action_flags->flags_action_2);
++      queue_head_.hold_on_other_key_press = keyRoleManager.superkey_hold_on_other_key_press(action_flags->sk_id);
+     }
+     else 
+     {
+@@ -472,6 +478,7 @@ bool Qukeys::isDualUseKey(Key key) {
+       //NRF_LOG_DEBUG("  Using action flags: action1_flags=0x%02X, action2_flags=0x%02X",
+       //              action_flags->flags_action_1, action_flags->flags_action_2);
+       queue_head_.primary_key.setFlags(action_flags->flags_action_1);
++      queue_head_.hold_on_other_key_press = keyRoleManager.superkey_hold_on_other_key_press(action_flags->sk_id);
+     } else {
+       //NRF_LOG_DEBUG("  No action flags, using default flags");
+       queue_head_.primary_key.setFlags(0);
+diff --git a/plugins/QukeysDygma.h b/plugins/QukeysDygma.h
+index cebcf71..6b3b21e 100644
+--- a/plugins/QukeysDygma.h
++++ b/plugins/QukeysDygma.h
+@@ -227,7 +227,9 @@ class Qukeys : public kaleidoscope::Plugin {
+   // when true, a qukey whose primary value is not a modifier resolves to its
+   // alternate (hold) value as soon as another key is pressed while it is held,
+   // instead of waiting for that key's release or for the hold timeout. Not
+-  // persisted: resets to QUKEYS_HOLD_ON_OTHER_KEY_PRESS on boot.
++  // persisted: resets to QUKEYS_HOLD_ON_OTHER_KEY_PRESS on boot. This is a
++  // master switch; each Superkey also has its own setting (see
++  // KeyRoleManager::superkey_hold_on_other_key_press()), and both must be on.
+   bool hold_on_other_key_press_{QUKEYS_HOLD_ON_OTHER_KEY_PRESS};
+ 
+   const Qukeys_config_t * p_Qukeys_config;
+@@ -266,6 +268,9 @@ class Qukeys : public kaleidoscope::Plugin {
+   struct {
+     Key primary_key{Key_Transparent};
+     Key alternate_key{Key_Transparent};
++    // Whether this qukey uses hold-on-other-key-press. Comes from the
++    // Superkey it was made from; qukeys that aren't from a Superkey use it.
++    bool hold_on_other_key_press{true};
+   } queue_head_;
+ 
+   // Internal helper methods.
+-- 
+2.43.0
+

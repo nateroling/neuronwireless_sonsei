@@ -61,11 +61,14 @@ struct Qukeys {
   bool hold_on_other_key_press_ = true;
   const Cfg *p_Qukeys_config;
   uint16_t prior_keypress_timestamp_ = 256;
-  struct { Key primary_key{-1}; Key alternate_key{-1}; } queue_head_;
+  // The Q key's own (per-Superkey) hold-on-other-key-press setting.
+  bool q_hold_on_other_key_press = true;
+  struct { Key primary_key{-1}; Key alternate_key{-1}; bool hold_on_other_key_press{true}; } queue_head_;
   std::vector<std::string> out;
 
   bool isQukey(KeyAddr k) {
-    if (k == 1) { queue_head_.primary_key = {100}; queue_head_.alternate_key = {1000}; return true; }
+    queue_head_.hold_on_other_key_press = true;
+    if (k == 1) { queue_head_.hold_on_other_key_press = q_hold_on_other_key_press; queue_head_.primary_key = {100}; queue_head_.alternate_key = {1000}; return true; }
     queue_head_.primary_key = {k * 10};
     queue_head_.alternate_key = {-1};
     return false;
@@ -101,11 +104,12 @@ struct Qukeys {
 
 struct Ev { uint32_t t; KeyAddr a; bool press; };
 
-static std::string run(const std::vector<Ev> &evs, bool hold_on_press) {
+static std::string run(const std::vector<Ev> &evs, bool hold_on_press, bool per_key) {
   static const Cfg cfg{250, 80, 50, 75};
   Qukeys q;
   q.p_Qukeys_config = &cfg;
   q.hold_on_other_key_press_ = hold_on_press;
+  q.q_hold_on_other_key_press = per_key;
   Runtime.now = 1000;  // start away from 0 like a running keyboard
   size_t i = 0;
   for (uint32_t ms = 0; ms < 800; ++ms, ++Runtime.now) {
@@ -134,7 +138,9 @@ static std::string run(const std::vector<Ev> &evs, bool hold_on_press) {
 // prior interval 75 (Dygma defaults). Q is a qukey: tap = q, hold = CTRL.
 // Output: "<key>@<ms>" is a press sent to the host at that time, "^x" a release.
 // "off" expectations are stock Qukeys behavior (verified identical to the
-// unpatched file).
+// unpatched file). Each case runs three ways: master switch and the key's
+// own setting both on ("on"); master switch off ("off"); master switch on but
+// the key's own setting off ("key"), which must match "off".
 int main() {
   const KeyAddr Q = 1, A = 2, B = 3, C = 4;
   struct Case { const char *name; std::vector<Ev> evs; const char *on; const char *off; };
@@ -159,13 +165,15 @@ int main() {
      "a@0 ^a q@50 b@51 c@52 ^b ^c ^Q ", "a@0 ^a q@50 b@51 c@52 ^b ^c ^Q "},
   };
   int failures = 0;
+  struct Mode { const char *label; bool master; bool per_key; bool expect_on; };
+  const Mode modes[] = {{"on ", true, true, true}, {"off", false, true, false}, {"key", true, false, false}};
   for (auto &c : cases) {
-    for (int flag = 1; flag >= 0; --flag) {
-      std::string got = run(c.evs, flag);
-      const char *want = flag ? c.on : c.off;
+    for (const Mode &m : modes) {
+      std::string got = run(c.evs, m.master, m.per_key);
+      const char *want = m.expect_on ? c.on : c.off;
       bool ok = got == want;
       failures += !ok;
-      printf("%s  %-26s [%s] %s\n", ok ? "PASS" : "FAIL", c.name, flag ? "on " : "off", got.c_str());
+      printf("%s  %-26s [%s] %s\n", ok ? "PASS" : "FAIL", c.name, m.label, got.c_str());
       if (!ok) printf("      expected: %s\n", want);
     }
   }

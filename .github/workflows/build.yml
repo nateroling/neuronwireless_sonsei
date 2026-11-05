@@ -51,9 +51,13 @@ jobs:
 
       - name: Apply patches
         run: |
-          for p in patches/kaleidoscope_adapter/*.patch; do
-            echo "Applying $p"
-            git apply --verbose --directory=libraries/kaleidoscope_adapter "$p"
+          # patches/<dir>/ patches the submodule at libraries/<dir>.
+          for dir in kaleidoscope_adapter kaleidoscope_adapter/kaleidoscope; do
+            for p in patches/$dir/*.patch; do
+              [ -e "$p" ] || continue
+              echo "Applying $p"
+              git apply --verbose --directory=libraries/$dir "$p"
+            done
           done
 
       - name: Test tap-or-hold logic (host)
@@ -102,6 +106,7 @@ jobs:
       - name: Check the patch made it into the binary
         run: |
           grep -a -q "qukeys.holdOnOtherKeyPress" build/release/NeuronWireless_sonsei.bin
+          grep -a -q "superkeys.holdOnOtherKey" build/release/NeuronWireless_sonsei.bin
           grep -a -q "$SONSEI_FW_VERSION" build/release/NeuronWireless_sonsei.bin
           echo "OK: patched Focus command and fork version string present"
 
