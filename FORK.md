@@ -57,8 +57,13 @@ Flash the official firmware with Bazecor's normal Firmware Update.
 ## Turning it off without reflashing
 
 The Focus command `qukeys.holdOnOtherKeyPress` reads the setting (`1` or
-`0`), and `qukeys.holdOnOtherKeyPress 0` turns it off until the keyboard
-restarts. The setting is not saved to memory yet.
+`0`), and `qukeys.holdOnOtherKeyPress 0` turns it off. The setting is saved
+to the keyboard, like the other Superkey settings, so it survives restarts.
+It is on until you first change it.
+
+It is stored in its own config item after all of the stock settings, so the
+stock settings keep their place in memory and carry over in both directions.
+Going back to stock drops it; coming back to this build turns it on again.
 
 ## Layout of this repo
 

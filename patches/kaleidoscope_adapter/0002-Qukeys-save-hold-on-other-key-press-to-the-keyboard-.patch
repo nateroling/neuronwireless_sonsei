@@ -1,0 +1,152 @@
+From 374c18fcbde149767299e8bb1dd8f877eea75a15 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 14:41:27 +0000
+Subject: [PATCH] Qukeys: save hold-on-other-key-press to the keyboard config
+
+Store the qukeys.holdOnOtherKeyPress setting in a new config item,
+KBDMEM_ITEM_TYPE_QUKEYS_EXT, so it survives restarts and Bazecor can
+read and write it like the other Superkey settings.
+
+The item is separate from Qukeys_config_t so the stock config layout
+is unchanged. The application places it after every stock item in its
+config cache. Stored values are 0x01 (on) and 0x02 (off); anything
+else, including 0xFF from an erased or stock-written config, means
+never set and uses the QUKEYS_HOLD_ON_OTHER_KEY_PRESS default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013er8HvVx2UQptRCtTJmM6t
+---
+ fal/public/kbdfal_memory.h |  1 +
+ plugins/QukeysDygma.cpp    | 28 +++++++++++++++++++++++++++-
+ plugins/QukeysDygma.h      | 19 +++++++++++++++++--
+ 3 files changed, 45 insertions(+), 3 deletions(-)
+
+diff --git a/fal/public/kbdfal_memory.h b/fal/public/kbdfal_memory.h
+index e79ba56..9bcc6da 100644
+--- a/fal/public/kbdfal_memory.h
++++ b/fal/public/kbdfal_memory.h
+@@ -34,6 +34,7 @@ extern "C" {
+         KBDMEM_ITEM_TYPE_QUKEYS,
+         KBDMEM_ITEM_TYPE_SUPERKEY,
+         KBDMEM_ITEM_TYPE_MACROS,
++        KBDMEM_ITEM_TYPE_QUKEYS_EXT,   /* Fork: extra Qukeys settings, stored after all stock items */
+     } kbdmem_item_type_t;
+ 
+ #ifdef __cplusplus
+diff --git a/plugins/QukeysDygma.cpp b/plugins/QukeysDygma.cpp
+index 0491d80..a199c29 100644
+--- a/plugins/QukeysDygma.cpp
++++ b/plugins/QukeysDygma.cpp
+@@ -36,6 +36,11 @@
+ #define DEFAULT_MINIMUM_HOLD_TIME_MS         50
+ #define DEFAULT_MINIMUM_PRIOR_INTERVAL_MS    75
+ 
++// Stored values for hold-on-other-key-press. Neither 0x00 nor 0xFF, so an
++// erased, stock-written or zeroed byte reads as "never set".
++#define QUKEYS_HOOKP_STORED_ON               0x01
++#define QUKEYS_HOOKP_STORED_OFF              0x02
++
+ namespace kaleidoscope {
+ namespace plugin {
+ 
+@@ -632,7 +637,6 @@ EventHandlerResult Qukeys::onFocusEvent(const char *command)
+     }
+   }
+ 
+-  // Not persisted (v0): a write lasts until the keyboard restarts.
+   if (strcmp_P(command + 7, PSTR("holdOnOtherKeyPress")) == 0)
+   {
+     if (::Focus.isEOL())
+@@ -645,6 +649,7 @@ EventHandlerResult Qukeys::onFocusEvent(const char *command)
+       ::Focus.read(enabled);
+ 
+       hold_on_other_key_press_ = (enabled != 0);
++      mem_hold_on_other_key_press_save( hold_on_other_key_press_ );
+     }
+   }
+ 
+@@ -678,6 +683,16 @@ EventHandlerResult Qukeys::onSetup()
+     mem_minimum_prior_interval_save( DEFAULT_MINIMUM_PRIOR_INTERVAL_MS );
+   }
+ 
++  result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_QUKEYS_EXT, (const void **)&p_Qukeys_ext_config );
++  ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
++
++  switch( p_Qukeys_ext_config->hold_on_other_key_press )
++  {
++    case QUKEYS_HOOKP_STORED_ON:  hold_on_other_key_press_ = true;  break;
++    case QUKEYS_HOOKP_STORED_OFF: hold_on_other_key_press_ = false; break;
++    default:                      hold_on_other_key_press_ = QUKEYS_HOLD_ON_OTHER_KEY_PRESS; break;
++  }
++
+   return EventHandlerResult::OK;
+ 
+   UNUSED( result );
+@@ -723,6 +738,17 @@ void Qukeys::mem_minimum_prior_interval_save( uint8_t minimum_prior_interval )
+     UNUSED( result );
+ }
+ 
++void Qukeys::mem_hold_on_other_key_press_save( bool enabled )
++{
++    result_t result = RESULT_ERR;
++    uint8_t stored = enabled ? QUKEYS_HOOKP_STORED_ON : QUKEYS_HOOKP_STORED_OFF;
++
++    result = kbdfal_ll_memory_data_save( &p_Qukeys_ext_config->hold_on_other_key_press, &stored, sizeof(p_Qukeys_ext_config->hold_on_other_key_press) );
++    ASSERT_DYGMA( result == RESULT_OK, "hold_on_other_key_press save failed" );
++
++    UNUSED( result );
++}
++
+ } // namespace plugin {
+ } // namespace kaleidoscope {
+ 
+diff --git a/plugins/QukeysDygma.h b/plugins/QukeysDygma.h
+index cebcf71..969c57c 100644
+--- a/plugins/QukeysDygma.h
++++ b/plugins/QukeysDygma.h
+@@ -119,6 +119,19 @@ class Qukeys : public kaleidoscope::Plugin {
+ 
+     } Qukeys_config_t;
+ 
++    // Extra settings added by this fork. Kept in its own config item, placed
++    // after every stock item in the config cache, so the stock layout (and
++    // everyone's saved layers and settings) is untouched.
++    typedef struct PACK
++    {
++        // Hold-on-other-key-press, as stored: QUKEYS_HOOKP_STORED_ON or
++        // QUKEYS_HOOKP_STORED_OFF. Any other value (0xFF on a fresh or stock
++        // config, or padding left over from before this field existed) means
++        // "never set", which uses the QUKEYS_HOLD_ON_OTHER_KEY_PRESS default.
++        uint8_t hold_on_other_key_press;
++
++    } Qukeys_ext_config_t;
++
+  public:
+   // Methods for turning the plugin on and off.
+   void activate() {
+@@ -226,11 +239,12 @@ class Qukeys : public kaleidoscope::Plugin {
+   // Hold-on-other-key-press (QMK HOLD_ON_OTHER_KEY_PRESS / ZMK "hold-preferred"):
+   // when true, a qukey whose primary value is not a modifier resolves to its
+   // alternate (hold) value as soon as another key is pressed while it is held,
+-  // instead of waiting for that key's release or for the hold timeout. Not
+-  // persisted: resets to QUKEYS_HOLD_ON_OTHER_KEY_PRESS on boot.
++  // instead of waiting for that key's release or for the hold timeout. Loaded
++  // from the config in onSetup(); QUKEYS_HOLD_ON_OTHER_KEY_PRESS if never set.
+   bool hold_on_other_key_press_{QUKEYS_HOLD_ON_OTHER_KEY_PRESS};
+ 
+   const Qukeys_config_t * p_Qukeys_config;
++  const Qukeys_ext_config_t * p_Qukeys_ext_config;
+ 
+ //  // This variable stores the percentage number between 0 and 99 that determines
+ //  // how forgiving the plugin is of rollover from a qukey to a modified key.
+@@ -281,6 +295,7 @@ class Qukeys : public kaleidoscope::Plugin {
+   void mem_overlap_threshold_save( uint8_t overlap_threshold );
+   void mem_minimum_hold_time_save( uint8_t minimum_hold_time );
+   void mem_minimum_prior_interval_save( uint8_t minimum_prior_interval );
++  void mem_hold_on_other_key_press_save( bool enabled );
+ };
+ 
+ // This function returns true for any key that we expect to be used chorded with
+-- 
+2.43.0
+

@@ -50,7 +50,15 @@ typedef struct PACK __attribute__((aligned(4)))
 
     BleManager::connections_config_t ble_connections;
 
+    /* Fork-only items. Always append here, after every stock item, so the
+     * stock items keep their offsets in the EEPROM image and settings carry
+     * over to and from the official firmware. */
+    kaleidoscope::plugin::Qukeys::Qukeys_ext_config_t QukeysExt;
+
 } config_cache_t;
+
+/* The config image lives in the 2 x 4 KB flash pages the EEPROM class owns. */
+static_assert( sizeof( config_cache_t ) <= 2 * 4096, "config cache does not fit in the EEPROM pages" );
 
 static config_cache_t config_cache;
 
@@ -141,6 +149,12 @@ static result_t _cfg_item_request_kbdmem_cb( kbdmem_item_type_t item_type, const
         case KBDMEM_ITEM_TYPE_MACROS:
 
             *pp_item = &config_cache.macros;
+
+            break;
+
+        case KBDMEM_ITEM_TYPE_QUKEYS_EXT:
+
+            *pp_item = &config_cache.QukeysExt;
 
             break;
 
