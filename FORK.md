@@ -54,17 +54,37 @@ both directions. Bazecor also backs them up before flashing
 
 Flash the official firmware with Bazecor's normal Firmware Update.
 
-## Turning it off without reflashing
+## Choosing which Superkeys use it
 
-The Focus command `qukeys.holdOnOtherKeyPress` reads the setting (`1` or
-`0`), and `qukeys.holdOnOtherKeyPress 0` turns it off until the keyboard
-restarts. The setting is not saved to memory yet.
+Each Superkey has its own on/off for this, saved on the keyboard. Every
+Superkey starts with it on, so nothing changes until you turn it off for one.
+
+- Bazecor (from the fork with this feature): a **Hold on other key press**
+  checkbox in the Superkey editor.
+- Focus: `superkeys.holdOnOtherKey` lists one `1` or `0` per Superkey slot,
+  in slot order. `superkeys.holdOnOtherKey 1 0 1` sets slots 0 to 2 and leaves
+  the rest as they are.
+
+Two Superkeys with exactly the same TAP and HOLD become the same key inside
+the firmware, so they share one setting (the first one's).
+
+The setting lives in its own config item after all the stock settings, so the
+stock settings keep their place in memory and carry over in both directions.
+Going back to stock drops it; coming back to this build turns it on for every
+Superkey again.
+
+## Turning it off everywhere without reflashing
+
+The Focus command `qukeys.holdOnOtherKeyPress` reads the master switch (`1`
+or `0`), and `qukeys.holdOnOtherKeyPress 0` turns it off for every key until
+the keyboard restarts. It is not saved.
 
 ## Layout of this repo
 
-- `patches/kaleidoscope_adapter/` holds the change, as a patch to
-  `libraries/kaleidoscope_adapter` (`plugins/QukeysDygma.{h,cpp}`). CI
-  applies it at build time.
+- `patches/<dir>/` holds patches to the submodule at `libraries/<dir>`:
+  `patches/kaleidoscope_adapter/` for Qukeys and the config item list, and
+  `patches/kaleidoscope_adapter/kaleidoscope/` for KeyRoleManager (the
+  per-Superkey setting). CI applies them at build time, in that order.
 - `tools/qukeys-sim/` is a host-side test. It compiles the real decision
   code against stubs and checks timed key sequences with the setting on and off.
 - `tools/check_seal.py` runs the same image checks Bazecor runs before it
